@@ -25,10 +25,11 @@ if os.path.exists(keras_file):
   model = tf.keras.models.load_model(keras_file)
   model.summary()
 
+  # recompile model for evaluation
   model.compile(optimizer='adam',
-              loss=tf.keras.losses.SparseCategoricalCrossentropy(
-                  from_logits=True),
-              metrics=['accuracy'])
+                loss=tf.keras.losses.SparseCategoricalCrossentropy(
+                    from_logits=True),
+                metrics=['accuracy'])
 
 else:
   # Define the model architecture.
@@ -159,7 +160,8 @@ print("Size of gzipped pruned and quantized TFlite model: %.2f bytes" %
       (get_gzipped_model_size(quantized_and_pruned_tflite_file)))
 
 ### Evaluate TFLite models
-interpreter = tf.lite.Interpreter(model_content=quantized_and_pruned_tflite_model)
+interpreter = tf.lite.Interpreter(
+    model_content=quantized_and_pruned_tflite_model)
 interpreter.allocate_tensors()
 
 test_accuracy = evaluate_model(interpreter, test_images, test_labels)
