@@ -6,7 +6,7 @@ import numpy as np
 
 from tensorflow import keras
 import tensorflow_model_optimization as tfmot
-from utils import get_gzipped_model_size
+from utils import get_gzipped_model_size, evaluate_model
 
 ### Prepare dataset
 # Load MNIST dataset
@@ -24,6 +24,11 @@ if os.path.exists(keras_file):
   # Load existing model
   model = tf.keras.models.load_model(keras_file)
   model.summary()
+
+  model.compile(optimizer='adam',
+              loss=tf.keras.losses.SparseCategoricalCrossentropy(
+                  from_logits=True),
+              metrics=['accuracy'])
 
 else:
   # Define the model architecture.
@@ -49,15 +54,15 @@ else:
       validation_split=0.1,
   )
 
+  # Save baseline model
+  tf.keras.models.save_model(model, keras_file, include_optimizer=False)
+  print('Saved baseline model to:', keras_file)
+
 # Evaluate baseline model
 _, baseline_model_accuracy = model.evaluate(
     test_images, test_labels, verbose=0)
 
 print('Baseline test accuracy:', baseline_model_accuracy)
-
-# Save baseline model
-tf.keras.models.save_model(model, keras_file, include_optimizer=False)
-print('Saved baseline model to:', keras_file)
 
 
 ### Pruning ###
@@ -65,7 +70,7 @@ prune_low_magnitude = tfmot.sparsity.keras.prune_low_magnitude
 
 # Compute end step to finish pruning after 2 epochs.
 batch_size = 128
-epochs = 2
+epochs = 4
 validation_split = 0.1  # 10% of training set will be used for validation set.
 
 num_images = train_images.shape[0] * (1 - validation_split)
@@ -74,7 +79,7 @@ end_step = np.ceil(num_images / batch_size).astype(np.int32) * epochs
 # Define model for pruning.
 pruning_params = {
     'pruning_schedule': tfmot.sparsity.keras.PolynomialDecay(initial_sparsity=0.50,
-                                                             final_sparsity=0.80,
+                                                             final_sparsity=0.70,
                                                              begin_step=0,
                                                              end_step=end_step)
 }
@@ -89,8 +94,7 @@ model_for_pruning.compile(optimizer='adam',
 
 model_for_pruning.summary()
 
-
-logdir = tempfile.mkdtemp()
+logdir = './logs/'
 
 callbacks = [
     tfmot.sparsity.keras.UpdatePruningStep(),
@@ -113,7 +117,8 @@ model_for_export = tfmot.sparsity.keras.strip_pruning(model_for_pruning)
 
 
 ### Create 3x smaller models for pruning ###
-_, pruned_keras_file = tempfile.mkstemp('.h5')
+pruned_keras_file = './models/mnist_pruned.h5'
+
 tf.keras.models.save_model(
     model_for_export, pruned_keras_file, include_optimizer=False)
 print('Saved pruned Keras model to:', pruned_keras_file)
@@ -121,7 +126,7 @@ print('Saved pruned Keras model to:', pruned_keras_file)
 converter = tf.lite.TFLiteConverter.from_keras_model(model_for_export)
 pruned_tflite_model = converter.convert()
 
-_, pruned_tflite_file = tempfile.mkstemp('.tflite')
+pruned_tflite_file = './models/mnist_pruned.tflite'
 
 with open(pruned_tflite_file, 'wb') as f:
   f.write(pruned_tflite_model)
@@ -141,7 +146,7 @@ converter = tf.lite.TFLiteConverter.from_keras_model(model_for_export)
 converter.optimizations = [tf.lite.Optimize.DEFAULT]
 quantized_and_pruned_tflite_model = converter.convert()
 
-_, quantized_and_pruned_tflite_file = tempfile.mkstemp('.tflite')
+quantized_and_pruned_tflite_file = './models/mnist_qnp.tflite'
 
 with open(quantized_and_pruned_tflite_file, 'wb') as f:
   f.write(quantized_and_pruned_tflite_model)
@@ -152,3 +157,12 @@ print("Size of gzipped baseline Keras model: %.2f bytes" %
       (get_gzipped_model_size(keras_file)))
 print("Size of gzipped pruned and quantized TFlite model: %.2f bytes" %
       (get_gzipped_model_size(quantized_and_pruned_tflite_file)))
+
+### Evaluate TFLite models
+interpreter = tf.lite.Interpreter(model_content=quantized_and_pruned_tflite_model)
+interpreter.allocate_tensors()
+
+test_accuracy = evaluate_model(interpreter, test_images, test_labels)
+
+print('Pruned and quantized TFLite test_accuracy:', test_accuracy)
+print('Pruned TF test accuracy:', model_for_pruning_accuracy)
